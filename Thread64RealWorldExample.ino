@@ -202,9 +202,16 @@ void  background_1()
       }
       T64_LOCK;
 
-      // set the result now
-      data_from_background_ready = data;
-      data_from_background_ready_sequence = sequence;
+      // set the result now if the consumer is ready to consume
+      if (data_from_background_consumed_sequence == data_from_background_ready_sequence)
+      {
+        data_from_background_ready = data;
+        data_from_background_ready_sequence = sequence;
+      }
+      else
+      {
+         //we will do the calculation again and send teh result on next cycle
+      }
     }
   }
   T64_UNLOCK;
