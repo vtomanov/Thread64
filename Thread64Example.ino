@@ -28,7 +28,7 @@
 // this variable will be set by the background and will be read from the foreground
 int32_t shared_background_count = 0;
 
-void  backgroud()
+void  background()
 {
   // calculate the value of shared_background_count
   // do some work here
@@ -51,7 +51,7 @@ void setup()
   Serial.println("Thread64 TEST");
 
   // Thread64 ( background function & background stack size )
-  T64_INIT(backgroud, 256);
+  T64_INIT(background, 256);
 
 }
 
