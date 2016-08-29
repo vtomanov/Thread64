@@ -28,9 +28,6 @@
 // In case only timer is required pass NULL as a parameter
 inline void T64_INIT(void (*background)(), uint16_t background_stack_size);
 
-// Current value of timer
-inline int32_t T64_TIMER_GET();
-
 // Max background stack size hit so far
 inline uint16_t T64_BACKGROUND_MAX_STACK_GET();
 
@@ -58,6 +55,21 @@ inline T const T64_SET (T const n, T & v)
   interrupts();
   return ret;
 };
+
+// lock
+#define T64_LOCK noInterrupts();
+
+// unlock 
+#define T64_UNLOCK interrupts();
+
+//////////////////////////////////////////////////////////////////////////////////////
+// Timer related
+
+// Current value of timer
+inline int32_t T64_TIMER_GET();
+
+// Will return true only if the function is ready for execute
+inline bool T64_DO_EXECUTE(int32_t loopCounter, int32_t lastExecute, int32_t timeout);
 
 //////////////////////////////////////////////////////////////////////////////////////
 // Prevent the compiler from  optimising the code
@@ -332,6 +344,23 @@ inline int32_t T64_TIMER_GET()
 inline uint16_t T64_BACKGROUND_MAX_STACK_GET()
 {
   return T64_BK_ST_MAX_SIZE;
+}
+
+// this will return true only if the fuction is ready for execute
+inline bool T64_DO_EXECUTE(int32_t loopCounter, int32_t lastExecute, int32_t timeout)
+{
+  //handle the case when ++long become 0
+  if (loopCounter < lastExecute)
+  {
+    return true;
+  }
+
+  if ((lastExecute + timeout) < loopCounter)
+  {
+    return true;
+  }
+
+  return false;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////
