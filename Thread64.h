@@ -31,6 +31,16 @@ inline void T64_INIT(void (*background)(), uint16_t background_stack_size);
 // Max background stack size hit so far
 inline uint16_t T64_BACKGROUND_MAX_STACK_GET();
 
+//////////////////////////////////////////////////////////////////////////////////////
+// Timer related
+
+// Current value of timer
+inline int32_t T64_TIMER_GET();
+
+// Will return true only if the function is ready for execute
+inline bool T64_DO_EXECUTE(int32_t loopCounter, int32_t lastExecute, int32_t timeout);
+
+//////////////////////////////////////////////////////////////////////////////////////
 // Variable access ( only for ordinal )
 
 // return value, pass variable
@@ -56,30 +66,83 @@ inline T const T64_SET (T const n, T & v)
   return ret;
 };
 
-// lock
+// basic lock
 #define T64_LOCK noInterrupts();
 
-// unlock 
+// basic unlock
 #define T64_UNLOCK interrupts();
 
 //////////////////////////////////////////////////////////////////////////////////////
-// Timer related
+// PROVIDER -> PROCESSOR -> CONSUMER pattern helpers
 
-// Current value of timer
-inline int32_t T64_TIMER_GET();
+// declare shared variable for P->P->C pattern
+#define T64_DEF( T , a ) \
+  T T64_##a##_to; \
+  T T64_##a##_from;  \
+  uint64_t T64_##a##_to_sequence = 0L; \
+  uint64_t T64_##a##_from_sequence = 0L; \
+  uint64_t T64_##a##_consumed_sequence = 0L;
 
-// Will return true only if the function is ready for execute
-inline bool T64_DO_EXECUTE(int32_t loopCounter, int32_t lastExecute, int32_t timeout);
+// provider try to supply data to processor if processor is ready for P->P->C pattern
+#define T64_TRY_TO( v, a ) \
+  ( \
+    (T64_noInterrupts(), T64_##a##_to_sequence == T64_##a##_from_sequence) ? \
+    (T64_##a##_to = v, ++T64_##a##_to_sequence , T64_interrupts(), true) : \
+    (T64_interrupts(), false) \
+  ) \
 
-//////////////////////////////////////////////////////////////////////////////////////
-// Prevent the compiler from  optimising the code
+  // processor try to get data from provider if the provider has supplied new data
+#define T64_TRY_GET( o, a ) \
+  ( \
+    (T64_noInterrupts(), T64_##a##_to_sequence != T64_##a##_from_sequence) ? \
+    (o = T64_##a##_to, T64_interrupts(), true) : \
+    (T64_interrupts(), false) \
+  )
+
+  // processor try to send data to consumer if the consumer has finished with previous data
+#define T64_TRY_SET( v, a ) \
+  ( \
+    (T64_noInterrupts(), T64_##a##_from_sequence == T64_##a##_consumed_sequence) ? \
+    (T64_##a##_from = v, T64_##a##_from_sequence = T64_##a##_to_sequence, T64_interrupts(), true) : \
+    (T64_interrupts(), false) \
+  )
+
+  // consumer try to get data from processor if the processor has finished with processor has finished with processing
+#define T64_TRY_FROM( o, a ) \
+  ( \
+    (T64_noInterrupts(), T64_##a##_from_sequence != T64_##a##_consumed_sequence) ? \
+    (o = T64_##a##_from, T64_##a##_consumed_sequence = T64_##a##_from_sequence, T64_interrupts(), true) : \
+    (T64_interrupts(), false) \
+  )
+
+
+  /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  // IMPLEMENTATIONS
+
+
+  //////////////////////////////////////////////////////////////////////////////////////
+  // Prevent the compiler from  optimising the code
 #pragma GCC push_options
 #pragma GCC optimize ("O0")
 
-//////////////////////////////////////////////////////////////////////////////////////
-// IMPLEMENTATIONS (MARCO)
+  //////////////////////////////////////////////////////////////////////////////////////
+  // Wrap interrupts and noInterrupts in a fuction style to be able to use it in macro
+  inline bool T64_interrupts()
+  {
+    interrupts();
+    return true;
+  }
 
-#define T64_PUSH  asm volatile( " push  r0  "); \
+  inline bool T64_noInterrupts()
+  {
+    noInterrupts();
+    return true;
+  }
+  //////////////////////////////////////////////////////////////////////////////////////
+  // IMPLEMENTATIONS (MARCO)
+
+#define T64_PUSH  \
+  asm volatile( " push  r0  "); \
   asm volatile( " push  r1  ");  \
   asm volatile( " in r0,0x03f"); \
   asm volatile( " push r0");     \
@@ -117,7 +180,8 @@ inline bool T64_DO_EXECUTE(int32_t loopCounter, int32_t lastExecute, int32_t tim
   asm volatile( " push  r30 ");  \
   asm volatile( " push  r31 ");
 
-#define T64_POP  asm volatile( " pop r31 "); \
+#define T64_POP  \
+  asm volatile( " pop r31 "); \
   asm volatile( " pop r30 ");  \
   asm volatile( " pop r29 ");  \
   asm volatile( " pop r28 ");  \
@@ -154,216 +218,217 @@ inline bool T64_DO_EXECUTE(int32_t loopCounter, int32_t lastExecute, int32_t tim
   asm volatile( " pop r1  ");  \
   asm volatile( " pop r0  ");
 
-//////////////////////////////////////////////////////////////////////////////////////
-// IMPLEMENTATIONS ( .cpp )
+  //////////////////////////////////////////////////////////////////////////////////////
+  // IMPLEMENTATIONS ( .cpp )
 
-volatile int32_t T64_TIMER_millis10;  // store timer counter
 
-volatile uint16_t T64_BK_ST_MAX_SIZE;  // calculated MAX value ever hit by the background stack size
+  volatile int32_t T64_TIMER_millis10;  // store timer counter
 
-volatile bool T64_IS_BK_INITIALIZED; // if true we have background process of false only timer will be used
+  volatile uint16_t T64_BK_ST_MAX_SIZE;  // calculated MAX value ever hit by the background stack size
 
-volatile uint16_t T64_BK_SP_S_START;  // start of background stack memory
-volatile uint16_t T64_BK_SP;          // current background stack pointer last know value
-volatile uint16_t T64_FG_SP;          // current foreground stack pointer last know value
+  volatile bool T64_IS_BK_INITIALIZED; // if true we have background process of false only timer will be used
 
-volatile uint16_t T64_ONE_ST;// used during init/start thread process to store stack pointer
-volatile int8_t T64_ONE_START; // flag for just start of background to indicate need of direct jump
-volatile void * T64_ONE_START_PTR; // ptr for just start of background and return with direct jump
+  volatile uint16_t T64_BK_SP_S_START;  // start of background stack memory
+  volatile uint16_t T64_BK_SP;          // current background stack pointer last know value
+  volatile uint16_t T64_FG_SP;          // current foreground stack pointer last know value
 
-uint16_t T64_tmpSP;     // temporary storage for stack pointer during calculations
+  volatile uint16_t T64_ONE_ST;// used during init/start thread process to store stack pointer
+  volatile int8_t T64_ONE_START; // flag for just start of background to indicate need of direct jump
+  volatile void * T64_ONE_START_PTR; // ptr for just start of background and return with direct jump
 
-void T64_CALLBACK_10MSEC(); // the timer callback
-void T64_BK_LOOP(void (*background)()); // indefinite background loop
+  uint16_t T64_tmpSP;     // temporary storage for stack pointer during calculations
 
-inline void T64_INIT(void (*background)(), uint16_t background_stack_size)
-{
-  T64_BK_ST_MAX_SIZE = 0L;
-  T64_TIMER_millis10 = 0L;
-  T64_ONE_START = 0;
+  void T64_CALLBACK_10MSEC(); // the timer callback
+  void T64_BK_LOOP(void (*background)()); // indefinite background loop
 
-  if (background != NULL)
+  inline void T64_INIT(void (*background)(), uint16_t background_stack_size)
   {
-    T64_ONE_START = -1;
-    T64_ONE_START_PTR = && T64_ONE_START_LABEL;
-    T64_IS_BK_INITIALIZED = true;
-    T64_BK_SP_S_START = (uint16_t)malloc(background_stack_size) + background_stack_size;
-  }
-  else
-  {
-    T64_IS_BK_INITIALIZED = false;
-  }
+    T64_BK_ST_MAX_SIZE = 0L;
+    T64_TIMER_millis10 = 0L;
+    T64_ONE_START = 0;
 
-  Timer1.initialize(10000);                      // initialise timer1, and set a 10 millis period
-  Timer1.attachInterrupt(T64_CALLBACK_10MSEC);  // attaches callback() as a timer overflow interrupt
-
-  if (T64_IS_BK_INITIALIZED)
-  {
-    // we have background thread
-
-    // store all registers
-    // (we can push only the status but it doesn't matter as this is done only once during init and next all is pop)
-    T64_PUSH;
-
-    // save forground stack pointer
-    T64_ONE_ST = (SP);
-
-    // set stack pointer to the background stack
-    (SP) = T64_BK_SP_S_START;
-
-    // ready for first interrupt
-    T64_ONE_START = 1;
-
-    // start background
-    T64_BK_LOOP(background);
-
-T64_ONE_START_LABEL:
-
-    // we return here from first timer interrupt
-    // restore stack pointer to foreground stack
-    SP = T64_ONE_ST;
-
-    //restore all registers
-    T64_POP;
-
-  };
-
-}
-
-
-// call the background function in a endless loop
-void T64_BK_LOOP(void (*background)())
-{
-  for (; T64_ONE_START == 1;) {
-    /* wait for first timer interrupt to happened */
-  };
-  for (;;)
-  {
-    background();
-  };
-}
-
-void T64_CALLBACK_10MSEC()
-{
-
-  // make sure if preempted before ready for first interrupt we go out
-  if (T64_ONE_START < 0)
-  {
-    return;
-  }
-
-
-  if (T64_IS_BK_INITIALIZED)
-  {
-
-    // store all registers
-    // we push all registers as there is no way to predict which registers the
-    // compiler interrupt handler generator will store and which not
-
-    T64_PUSH;
-
-  }
-
-  if (T64_IS_BK_INITIALIZED)
-  {
-
-    // get the current value of stack pointer
-    T64_tmpSP = (SP);
-
-    if (T64_ONE_START == 1)
+    if (background != NULL)
     {
-      // this is first ever interrupt and we are in background
-
-      // make sure we never enetr here again
-      T64_ONE_START = 0;
-
-      // store background stack pointer - all registers already stored in the background stack
-      T64_BK_SP = T64_tmpSP;
-
-      // jump and continue inicialization process
-      goto * T64_ONE_START_PTR;
-    }
-
-  }
-
-
-  // timer calculations
-  T64_TIMER_millis10++;
-  if (T64_TIMER_millis10 < 0)
-  {
-    T64_TIMER_millis10 = 0;
-  }
-
-  if (T64_IS_BK_INITIALIZED)
-  {
-    // stack calculations
-    if (T64_tmpSP <= T64_BK_SP_S_START)
-    {
-      // we are in background thread
-
-      // store the background SP
-      T64_BK_SP = T64_tmpSP;
-
-      // calc max stack usage so far
-      T64_tmpSP = T64_BK_SP_S_START - T64_BK_SP;
-      if (T64_tmpSP > T64_BK_ST_MAX_SIZE)
-      {
-        T64_BK_ST_MAX_SIZE = T64_tmpSP;
-      }
-
-      // switch to foreground
-      SP = T64_FG_SP;
-
+      T64_ONE_START = -1;
+      T64_ONE_START_PTR = && T64_ONE_START_LABEL;
+      T64_IS_BK_INITIALIZED = true;
+      T64_BK_SP_S_START = (uint16_t)malloc(background_stack_size) + background_stack_size;
     }
     else
     {
-      // we are in foreground thread
+      T64_IS_BK_INITIALIZED = false;
+    }
 
-      // store foreground SP
-      T64_FG_SP = T64_tmpSP;
+    Timer1.initialize(10000);                      // initialise timer1, and set a 10 millis period
+    Timer1.attachInterrupt(T64_CALLBACK_10MSEC);  // attaches callback() as a timer overflow interrupt
 
-      // switch to background
-      SP = T64_BK_SP;
+    if (T64_IS_BK_INITIALIZED)
+    {
+      // we have background thread
+
+      // store all registers
+      // (we can push only the status but it doesn't matter as this is done only once during init and next all is pop)
+      T64_PUSH;
+
+      // save forground stack pointer
+      T64_ONE_ST = (SP);
+
+      // set stack pointer to the background stack
+      (SP) = T64_BK_SP_S_START;
+
+      // ready for first interrupt
+      T64_ONE_START = 1;
+
+      // start background
+      T64_BK_LOOP(background);
+
+  T64_ONE_START_LABEL:
+
+      // we return here from first timer interrupt
+      // restore stack pointer to foreground stack
+      SP = T64_ONE_ST;
+
+      //restore all registers
+      T64_POP;
+
+    };
+
+  }
+
+
+  // call the background function in a endless loop
+  void T64_BK_LOOP(void (*background)())
+  {
+    for (; T64_ONE_START == 1;) {
+      /* wait for first timer interrupt to happened */
+    };
+    for (;;)
+    {
+      background();
+    };
+  }
+
+  void T64_CALLBACK_10MSEC()
+  {
+
+    // make sure if preempted before ready for first interrupt we go out
+    if (T64_ONE_START < 0)
+    {
+      return;
+    }
+
+
+    if (T64_IS_BK_INITIALIZED)
+    {
+
+      // store all registers
+      // we push all registers as there is no way to predict which registers the
+      // compiler interrupt handler generator will store and which not
+
+      T64_PUSH;
+
+    }
+
+    if (T64_IS_BK_INITIALIZED)
+    {
+
+      // get the current value of stack pointer
+      T64_tmpSP = (SP);
+
+      if (T64_ONE_START == 1)
+      {
+        // this is first ever interrupt and we are in background
+
+        // make sure we never enetr here again
+        T64_ONE_START = 0;
+
+        // store background stack pointer - all registers already stored in the background stack
+        T64_BK_SP = T64_tmpSP;
+
+        // jump and continue inicialization process
+        goto * T64_ONE_START_PTR;
+      }
+
+    }
+
+
+    // timer calculations
+    T64_TIMER_millis10++;
+    if (T64_TIMER_millis10 < 0)
+    {
+      T64_TIMER_millis10 = 0;
+    }
+
+    if (T64_IS_BK_INITIALIZED)
+    {
+      // stack calculations
+      if (T64_tmpSP <= T64_BK_SP_S_START)
+      {
+        // we are in background thread
+
+        // store the background SP
+        T64_BK_SP = T64_tmpSP;
+
+        // calc max stack usage so far
+        T64_tmpSP = T64_BK_SP_S_START - T64_BK_SP;
+        if (T64_tmpSP > T64_BK_ST_MAX_SIZE)
+        {
+          T64_BK_ST_MAX_SIZE = T64_tmpSP;
+        }
+
+        // switch to foreground
+        SP = T64_FG_SP;
+
+      }
+      else
+      {
+        // we are in foreground thread
+
+        // store foreground SP
+        T64_FG_SP = T64_tmpSP;
+
+        // switch to background
+        SP = T64_BK_SP;
+      }
+    }
+
+    if (T64_IS_BK_INITIALIZED)
+    {
+      // restore all registers
+
+      T64_POP;
+
     }
   }
 
-  if (T64_IS_BK_INITIALIZED)
+  inline int32_t T64_TIMER_GET()
   {
-    // restore all registers
-
-    T64_POP;
-
-  }
-}
-
-inline int32_t T64_TIMER_GET()
-{
-  return T64_TIMER_millis10;
-}
-
-inline uint16_t T64_BACKGROUND_MAX_STACK_GET()
-{
-  return T64_BK_ST_MAX_SIZE;
-}
-
-// this will return true only if the fuction is ready for execute
-inline bool T64_DO_EXECUTE(int32_t loopCounter, int32_t lastExecute, int32_t timeout)
-{
-  //handle the case when ++long become 0
-  if (loopCounter < lastExecute)
-  {
-    return true;
+    return T64_TIMER_millis10;
   }
 
-  if ((lastExecute + timeout) < loopCounter)
+  inline uint16_t T64_BACKGROUND_MAX_STACK_GET()
   {
-    return true;
+    return T64_BK_ST_MAX_SIZE;
   }
 
-  return false;
-}
+  // this will return true only if the fuction is ready for execute
+  inline bool T64_DO_EXECUTE(int32_t loopCounter, int32_t lastExecute, int32_t timeout)
+  {
+    //handle the case when ++long become 0
+    if (loopCounter < lastExecute)
+    {
+      return true;
+    }
 
-//////////////////////////////////////////////////////////////////////////////////////
-//Restore the prevention of the compiler from  optimising the code
+    if ((lastExecute + timeout) < loopCounter)
+    {
+      return true;
+    }
+
+    return false;
+  }
+
+  //////////////////////////////////////////////////////////////////////////////////////
+  //Restore the prevention of the compiler from  optimising the code
 #pragma GCC pop_options
 
