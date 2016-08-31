@@ -28,7 +28,11 @@
 // In case only timer is required pass NULL as a parameter
 inline void T64_INIT(void (*background)(), uint16_t background_stack_size);
 
-// Max background stack size hit so far
+// Notify the system that the current thread is willing to "give up the CPU" for a while
+inline void T64_YIELD();
+
+// Max background stack size hit so far - use this to determining while
+// testing what is the stack size that you need to give to the background thread
 inline uint16_t T64_BACKGROUND_MAX_STACK_GET();
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -328,11 +332,22 @@ uint16_t T64_tmpSP;     // temporary storage for stack pointer during calculatio
 void T64_CALLBACK_10MSEC(); // the timer callback
 void T64_BK_LOOP(void (*background)()); // indefinite background loop
 
+bool T64_flag_call_from_yield;
+
+inline void T64_YIELD()
+{
+  noInterrupts();
+  T64_flag_call_from_yield = true;
+  Timer1.isrCallback();
+  interrupts();
+}
+
 inline void T64_INIT(void (*background)(), uint16_t background_stack_size)
 {
   T64_BK_ST_MAX_SIZE = 0L;
   T64_TIMER_millis10 = 0L;
   T64_ONE_START = 0;
+  T64_flag_call_from_yield = false;
 
   if (background != NULL)
   {
@@ -438,14 +453,20 @@ void T64_CALLBACK_10MSEC()
 
   }
 
-
-  // timer calculations
-  T64_TIMER_millis10++;
-  if (T64_TIMER_millis10 < 0)
+  if (T64_flag_call_from_yield)
   {
-    T64_TIMER_millis10 = 0;
+    // we do not increase the timer if teh interrupt is simulated from yeld;
+    T64_flag_call_from_yield = false;
   }
-
+  else
+  {
+    // timer calculations
+    T64_TIMER_millis10++;
+    if (T64_TIMER_millis10 < 0)
+    {
+      T64_TIMER_millis10 = 0;
+    }
+  }
   if (T64_IS_BK_INITIALIZED)
   {
     // stack calculations
