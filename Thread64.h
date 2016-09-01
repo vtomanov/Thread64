@@ -28,6 +28,9 @@
 // In case only timer is required pass NULL as a parameter
 inline void T64_INIT(void (*background)(), uint16_t background_stack_size);
 
+// In case you need only a timer - use this one ( same as NULL, 0)
+inline void T64_INIT();
+
 // Notify the system that the current thread is willing to "give up the CPU" for a while
 inline void T64_YIELD();
 
@@ -397,6 +400,10 @@ T64_ONE_START_LABEL:
 
 }
 
+inline void T64_INIT()
+{
+  T64_INIT(NULL, 0);
+}
 
 // call the background function in a endless loop
 void T64_BK_LOOP(void (*background)())
